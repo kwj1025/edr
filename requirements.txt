@@ -2,3 +2,8 @@ streamlit
 requests
 altair
 pandas
+fastapi
+uvicorn
+sqlalchemy
+psycopg2-binary
+pywin32

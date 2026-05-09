@@ -1,4 +1,5 @@
 import streamlit as st
+import requests
 import pandas as pd
 import altair as alt
 from datetime import datetime, timedelta
@@ -14,11 +15,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-LOG_FILE = "logs.csv"
+
 
 # ==============================
 # CSS
-# ==============================
+# ==============================        
 st.markdown("""
 <style>
     .main-title {
@@ -52,26 +53,45 @@ st.markdown("""
 # ==============================
 # logs.csv 읽기 함수
 # ==============================
-def load_logs():
-    """
-    사용자 대시보드에서 저장한 logs.csv를 읽어오는 함수.
-    logs.csv가 없으면 빈 DataFrame을 반환.
-    """
+SERVER_URL = "http://localhost:8000"
 
-    if os.path.exists(LOG_FILE):
-        df = pd.read_csv(LOG_FILE)
+def load_logs() -> pd.DataFrame:
+    try:
+        res = requests.get(f"{SERVER_URL}/logs?limit=5000", timeout=5)
+        res.raise_for_status()
+        df = pd.DataFrame(res.json())
+
+        if df.empty:
+            return df
+
+        # 영문 컬럼 → 한글 컬럼으로 변환
+        df = df.rename(columns={
+            "recv_time":        "로그 수신 날짜",
+            "gen_time":         "로그 생성 날짜",
+            "host_ip":          "호스트 IP 주소",
+            "os_name":          "운영체제",
+            "rule_level":       "룰 레벨",
+            "risk":             "위험도",
+            "detect_type":      "탐지 유형",
+            "tactic_id":        "Tactic ID",
+            "tactic_name":      "Tactic Name",
+            "technique_id":     "Technique ID",
+            "technique_name":   "Technique Name",
+            "action_desc":      "행위 내용",
+            "process_name":     "프로세스",
+            "status":           "상태",
+        })
 
         # 날짜 컬럼 변환
-        if "로그 수신 날짜" in df.columns:
-            df["로그 수신 날짜"] = pd.to_datetime(df["로그 수신 날짜"], errors="coerce")
-
-        if "로그 생성 날짜" in df.columns:
-            df["로그 생성 날짜"] = pd.to_datetime(df["로그 생성 날짜"], errors="coerce")
+        for col in ["로그 수신 날짜", "로그 생성 날짜"]:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors="coerce")
 
         return df
 
-    return pd.DataFrame()
-
+    except Exception as e:
+        st.error(f"서버 연결 실패: {e}")
+        return pd.DataFrame()
 
 # ==============================
 # 차트용 데이터 생성
@@ -186,14 +206,11 @@ tab1, tab2, tab3 = st.tabs(["로그", "네트워크", "시스템"])
 # ==============================
 # TAB 1: 로그
 # ==============================
-with tab1:
-    st.subheader("EDR 탐지 행위 분석")
-
-    if log_df.empty:
-        st.warning("아직 logs.csv 파일이 없습니다.")
-        st.info("사용자 대시보드에서 '관리자 대시보드로 더미 로그 전송' 버튼을 누르면 logs.csv가 생성됩니다.")
-    else:
-        st.success("사용자 대시보드에서 저장한 logs.csv 로그를 불러왔습니다.")
+if log_df.empty:
+    st.warning("수집된 로그가 없습니다.")
+    st.info("각 PC에서 Sysmon 로그를 수집하면 자동으로 표시됩니다.")
+else:
+    st.success(f"DB에서 로그 {len(log_df):,}건을 불러왔습니다.")
 
     # 날짜 범위 선택
     col1, col2, col3 = st.columns([0.3, 0.3, 0.4])
