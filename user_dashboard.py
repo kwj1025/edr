@@ -88,6 +88,8 @@ def collect_and_send(max_records: int = 500) -> tuple[int, int, str]:
         rows = sysmon_collector.collect(max_records=max_records)
         if not rows:
             return 0, 0, ""
+        
+        rows = sysmon_collector.apply_jonghan_policy(rows)   
 
         st.session_state.sysmon_logs = pd.DataFrame(rows)
         sent, err = send_to_server(rows)
