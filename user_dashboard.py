@@ -340,7 +340,7 @@ with row1_col2:
 
 
 # ==================================================================
-# 하단 레이아웃
+# 하단 레이아웃 - 차트 배경 투명화 및 테두리 제거 (강력 조치)
 # ==================================================================
 row2_col1, row2_col2, row2_col3 = st.columns([3, 3, 4])
 
@@ -348,21 +348,27 @@ with row2_col1:
     with st.container(border=True):
         st.markdown("### 위험도별 현황")
         if not st.session_state.sysmon_logs.empty:
-            # 종한님의 가중치 점수로 판별된 '위험도' 컬럼 데이터 집계
             risk_df = st.session_state.sysmon_logs['위험도'].value_counts().reset_index()
             risk_df.columns = ['위험도', '건수']
             
-            # 차트 그리기 (High: 빨강, Medium: 주황, Low: 파랑)
-            st.altair_chart(
-                alt.Chart(risk_df).mark_arc(innerRadius=50).encode(
-                    theta="건수:Q",
-                    color=alt.Color("위험도:N", scale=alt.Scale(
-                        domain=["High", "Medium", "Low"],
-                        range=["#ef4444", "#f59e0b", "#3b82f6"]
-                    )),
-                    tooltip=["위험도", "건수"]
-                ).properties(height=180), use_container_width=True
+            chart = alt.Chart(risk_df).mark_arc(innerRadius=50).encode(
+                theta="건수:Q",
+                color=alt.Color("위험도:N", scale=alt.Scale(
+                    domain=["High", "Medium", "Low"],
+                    range=["#ef4444", "#f59e0b", "#3b82f6"]
+                )),
+                tooltip=["위험도", "건수"]
+            ).properties(
+                height=180,
+                background='rgba(0,0,0,0)' # 👈 배경을 완전 투명(Alpha 0)으로 설정
+            ).configure_view(
+                strokeOpacity=0,           # 👈 차트 외곽선 제거
+                fill='transparent'         # 👈 내부 채우기 투명
+            ).configure_axis(
+                grid=False                 # 👈 그리드 제거
             )
+            # theme=None을 추가하여 스트림릿의 기본 테마 간섭을 차단합니다.
+            st.altair_chart(chart, use_container_width=True, theme=None)
         else:
             st.write("데이터가 없습니다.")
 
@@ -370,19 +376,25 @@ with row2_col2:
     with st.container(border=True):
         st.markdown("### 탐지 유형별 현황")
         if not st.session_state.sysmon_logs.empty:
-            # 종한님이 설정한 '탐지 유형' 컬럼 데이터 집계
             type_df = st.session_state.sysmon_logs['탐지 유형'].value_counts().reset_index()
             type_df.columns = ['유형', '건수']
             
-            # 가로 막대 차트로 탐지 유형 노출
-            st.altair_chart(
-                alt.Chart(type_df).mark_bar().encode(
-                    x="건수:Q",
-                    y=alt.Y("유형:N", sort='-x', title=None),
-                    color=alt.Color("유형:N", legend=None),
-                    tooltip=["유형", "건수"]
-                ).properties(height=180), use_container_width=True
+            chart = alt.Chart(type_df).mark_bar().encode(
+                x=alt.X("건수:Q", title="건수"),
+                y=alt.Y("유형:N", sort='-x', title=None),
+                color=alt.Color("유형:N", legend=None),
+                tooltip=["유형", "건수"]
+            ).properties(
+                height=180,
+                background='rgba(0,0,0,0)' # 👈 배경을 완전 투명으로 설정
+            ).configure_view(
+                strokeOpacity=0,
+                fill='transparent'
+            ).configure_axis(
+                labelColor='white',        # 👈 글자가 안 보일 수 있으니 흰색으로 설정
+                titleColor='white'
             )
+            st.altair_chart(chart, use_container_width=True, theme=None)
         else:
             st.write("데이터가 없습니다.")
 
