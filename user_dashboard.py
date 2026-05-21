@@ -406,7 +406,8 @@ with st.container(border=True):
             st.session_state.response_triggered = True
 
         except FileNotFoundError:
-            st.error("test_data.json 파일을 찾을 수 없습니다.")
+            #st.error("test_data.json 파일을 찾을 수 없습니다.")
+            pass
 
     if st.session_state.response_results:
         response_df = pd.DataFrame(st.session_state.response_results)
