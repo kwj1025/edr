@@ -7,3 +7,6 @@ uvicorn
 sqlalchemy
 psycopg2-binary
 pywin32
+xgboost
+scikit-learn
+joblib

@@ -8,6 +8,19 @@ import time
 import platform
 import json
 from response import response_by_risk
+import sys
+import os
+
+# XGBoost 위협도 판별 임포트
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'xgboost'))
+try:
+    from threat_predictor import ThreatPredictor
+    _THREAT_PREDICTOR = ThreatPredictor()
+    _PREDICTOR_READY = _THREAT_PREDICTOR.is_ready()
+except Exception as e:
+    _THREAT_PREDICTOR = None
+    _PREDICTOR_READY = False
+    print(f"⚠️ 위협도 판별 모듈 로드 실패: {e}")
 
 # ==================================================================
 # 설정
@@ -37,6 +50,41 @@ _SYSMON_READY: bool = _WIN32_OK and platform.system() == "Windows"
 if "sysmon_logs" not in st.session_state:
     st.session_state.sysmon_logs = pd.DataFrame()
     
+# ==================================================================
+# XGBoost 위협도 판별
+# ==================================================================
+def add_xgboost_threat_score(rows: list[dict]) -> list[dict]:
+    """
+    로그에 XGBoost 위협도 판별 결과 추가
+    
+    Args:
+        rows: 원본 로그 리스트
+        
+    Returns:
+        XGBoost 위협도 및 라벨이 추가된 로그 리스트
+    """
+    if not _PREDICTOR_READY or not rows:
+        return rows
+    
+    try:
+        for row in rows:
+            if _THREAT_PREDICTOR:
+                result = _THREAT_PREDICTOR.predict(row)
+                if result['success']:
+                    row['XGBoost_위협도'] = round(result['probability'] * 100, 2)
+                    row['XGBoost_라벨'] = result['risk_label']
+                else:
+                    row['XGBoost_위협도'] = -1.0
+                    row['XGBoost_라벨'] = 'Unknown'
+            else:
+                row['XGBoost_위협도'] = -1.0
+                row['XGBoost_라벨'] = 'Unknown'
+    except Exception as e:
+        print(f"⚠️ XGBoost 위협도 추가 오류: {e}")
+    
+    return rows
+
+
 # ==================================================================
 # 서버 전송
 # ==================================================================
@@ -90,7 +138,10 @@ def collect_and_send(max_records: int = 500) -> tuple[int, int, str]:
         if not rows:
             return 0, 0, ""
         
-        rows = sysmon_collector.apply_jonghan_policy(rows)   
+        rows = sysmon_collector.apply_jonghan_policy(rows)
+        
+        # XGBoost 위협도 추가
+        rows = add_xgboost_threat_score(rows)
 
         st.session_state.sysmon_logs = pd.DataFrame(rows)
         sent, err = send_to_server(rows)
@@ -309,7 +360,7 @@ with row1_col2:
 
         if not st.session_state.sysmon_logs.empty:
             display_cols = [c for c in
-                ["로그 수신 날짜", "위험도", "탐지 유형", "Tactic ID", "Technique Name", "프로세스", "행위 내용", "상태"]
+                ["로그 수신 날짜", "위험도", "XGBoost_위협도", "XGBoost_라벨", "탐지 유형", "Tactic ID", "Technique Name", "프로세스", "행위 내용", "상태"]
                 if c in st.session_state.sysmon_logs.columns]
             display_df = st.session_state.sysmon_logs[display_cols].head(10)
             st.dataframe(display_df, width="stretch", hide_index=True,
@@ -320,7 +371,7 @@ with row1_col2:
         if st.button(
             f"🔍 Sysmon 로그 수집 ({TARGET_IDS_LABEL})",
             width="stretch",
-            help="Event ID 1·3·5·22 수집 → 대시보드 표시 + 서버 전송",
+            help="Event ID 1·3·5·22 수집 → XGBoost 위협도 판별 → 대시보드 표시 + 서버 전송",
         ):
             with st.spinner("Sysmon 이벤트 수집 중…"):
                 collected, sent, err = collect_and_send(max_records=500)
@@ -333,11 +384,15 @@ with row1_col2:
                 if err:
                     st.warning(f"⚠️ {collected}건 수집됨, 서버 전송 실패: {err}")
                 else:
-                    st.success(f"✅ {sent}건 수집 완료 → 서버 전송됨")
+                    threat_status = "✓ XGBoost 판별 완료" if _PREDICTOR_READY else "⚠️ XGBoost 미적용"
+                    st.success(f"✅ {sent}건 수집 완료 → 서버 전송됨 ({threat_status})")
                 st.rerun()
 
         if not _SYSMON_READY:
             st.caption("⚠️ Windows + pywin32 필요  `pip install pywin32`")
+        
+        if not _PREDICTOR_READY:
+            st.caption("⚠️ XGBoost 모델 로드 실패 - 위협도 판별 불가")
 
 
 # ==================================================================

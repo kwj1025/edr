@@ -1,0 +1,6 @@
+﻿로그 수신 날짜,로그 생성 날짜,호스트 IP 주소,운영체제,룰 레벨,위험도,탐지 유형,Tactic ID,Tactic Name,Technique ID,Technique Name,행위 내용,프로세스,상태
+2026-04-25 19:03:55,2026-04-25 19:03:55,192.168.0.10,Windows 10 x64,일반,L,의심,TA0002,Execution,T1059,Command and Scripting Interpreter,powershell.exe 의심스러운 프로세스 실행,powershell.exe,신규
+2026-04-25 19:19:41,2026-04-25 19:19:41,192.168.0.10,Windows 10 x64,일반,L,의심,TA0002,Execution,T1059,Command and Scripting Interpreter,powershell.exe 의심스러운 프로세스 실행,powershell.exe,신규
+2026-04-25 19:19:41,2026-04-25 19:19:41,192.168.0.10,Windows 10 x64,중요,H,악성,TA0005,Defense Evasion,T1055.001,Process Injection,unknown.exe 악성 행위 의심,unknown.exe,신규
+2026-04-25 19:23:23,2026-04-25 19:23:23,192.168.0.10,Windows 10 x64,일반,L,의심,TA0002,Execution,T1059,Command and Scripting Interpreter,powershell.exe 의심스러운 프로세스 실행,powershell.exe,신규
+2026-04-25 19:23:23,2026-04-25 19:23:23,192.168.0.10,Windows 10 x64,중요,H,악성,TA0005,Defense Evasion,T1055.001,Process Injection,unknown.exe 악성 행위 의심,unknown.exe,신규
