@@ -33,13 +33,16 @@ TARGET_IDS_LABEL = "Event ID 1 · 3 · 5 · 22"
 # ==================================================================
 # Sysmon 수집기 임포트 + 가용 여부 체크
 # ==================================================================
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'collector'))
 try:
     import win32evtlog  # type: ignore[import]
-    import sysmon_collector  # type: ignore[import]
+    from sysmon_collector import collect, apply_jonghan_policy
     _WIN32_OK = True
-except ImportError:
-    sysmon_collector = None  # type: ignore[assignment]
+except ImportError as e:
+    collect = None
+    apply_jonghan_policy = None
     _WIN32_OK = False
+    print(f"⚠️ Sysmon 수집기 임포트 실패: {e}")
 
 # 실행 시점에 한 번만 체크
 _SYSMON_READY: bool = _WIN32_OK and platform.system() == "Windows"
@@ -133,12 +136,15 @@ def collect_and_send(max_records: int = 500) -> tuple[int, int, str]:
     if not (_WIN32_OK and platform.system() == "Windows"):
         return 0, 0, "Windows + pywin32 환경에서만 수집 가능합니다. (pip install pywin32)"
 
+    if not collect or not apply_jonghan_policy:
+        return 0, 0, "Sysmon 수집기를 로드할 수 없습니다."
+
     try:
-        rows = sysmon_collector.collect(max_records=max_records)
+        rows = collect(max_records=max_records)
         if not rows:
             return 0, 0, ""
         
-        rows = sysmon_collector.apply_jonghan_policy(rows)
+        rows = apply_jonghan_policy(rows)
         
         # XGBoost 위협도 추가
         rows = add_xgboost_threat_score(rows)
