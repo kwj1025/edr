@@ -44,7 +44,7 @@ SUSPICIOUS_KEYWORDS = {
 OBFUSCATION_PATTERNS = {
     "powershell.*-e[ncodedcommand]*": "인코딩된 명령어",
     r"\[system\.text\.encoding\].*::": "텍스트 인코딩 사용",
-    r"\$\{.*\}": "변수 보간 (난독화)"},
+    r"\$\{.*\}": "변수 보간 (난독화)",
     r"['\"].*\$\(.*\)\$\{.*\}": "복잡한 문자열 조합",
     r"\.\s*\(": "메서드 체이닝",
 }

@@ -47,21 +47,21 @@ class ThreatPredictor:
             self.model = xgb.Booster()
             self.model.load_model(self.model_path)
             self.feature_names = self.model.feature_names
-            print(f"✓ 모델 로드 성공: {self.model_path}")
+            print(f"[OK] 모델 로드 성공: {self.model_path}")
             
         except Exception as e:
-            print(f"✗ 모델 로드 실패: {e}")
+            print(f"[FAIL] 모델 로드 실패: {e}")
             self.model = None
             return
         
         try:
             if os.path.exists(self.encoders_path):
                 self.encoders = joblib.load(self.encoders_path)
-                print(f"✓ 인코더 로드 성공: {self.encoders_path}")
+                print(f"[OK] 인코더 로드 성공: {self.encoders_path}")
             else:
-                print(f"⚠ 인코더 파일을 찾을 수 없습니다: {self.encoders_path}")
+                print(f"[WARN] 인코더 파일을 찾을 수 없습니다: {self.encoders_path}")
         except Exception as e:
-            print(f"✗ 인코더 로드 실패: {e}")
+            print(f"[FAIL] 인코더 로드 실패: {e}")
     
     def is_ready(self):
         """모델이 준비되었는지 확인"""
@@ -100,7 +100,7 @@ class ThreatPredictor:
                         )
                         df[col] = encoder.transform(df[col])
                     except Exception as e:
-                        print(f"⚠ 컬럼 {col} 인코딩 실패: {e}")
+                        print(f"[WARN] 컬럼 {col} 인코딩 실패: {e}")
                         df[col] = 0
                 elif not pd.api.types.is_numeric_dtype(df[col]):
                     # 인코더가 없는 경우 수치형으로 변환
@@ -109,7 +109,7 @@ class ThreatPredictor:
                     try:
                         df[col] = le.fit_transform(df[col])
                     except Exception as e:
-                        print(f"⚠ 컬럼 {col} 변환 실패: {e}")
+                        print(f"[WARN] 컬럼 {col} 변환 실패: {e}")
                         df[col] = 0
                 else:
                     # 수치형 컬럼 결측치 처리
@@ -124,7 +124,7 @@ class ThreatPredictor:
             return df
             
         except Exception as e:
-            print(f"✗ 전처리 실패: {e}")
+            print(f"[FAIL] 전처리 실패: {e}")
             return None
     
     def predict(self, log_dict, return_probability=True):
@@ -187,7 +187,7 @@ class ThreatPredictor:
             }
             
         except Exception as e:
-            print(f"✗ 예측 실패: {e}")
+            print(f"[FAIL] 예측 실패: {e}")
             return {
                 'prediction': -1,
                 'probability': 0.0,

@@ -10,6 +10,8 @@ import json
 from response import response_by_risk
 import sys
 import os
+import psutil
+import datetime
 
 # XGBoost 위협도 판별 임포트
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'xgboost'))
@@ -20,7 +22,7 @@ try:
 except Exception as e:
     _THREAT_PREDICTOR = None
     _PREDICTOR_READY = False
-    print(f"⚠️ 위협도 판별 모듈 로드 실패: {e}")
+    print(f"[WARN] 위협도 판별 모듈 로드 실패: {e}")
 
 # ==================================================================
 # 설정
@@ -43,7 +45,7 @@ except ImportError as e:
     apply_jonghan_policy = None
     collect_fileless = None
     _WIN32_OK = False
-    print(f"⚠️ Sysmon 수집기 임포트 실패: {e}")
+    print(f"[WARN] Sysmon 수집기 임포트 실패: {e}")
 
 # 실행 시점에 한 번만 체크
 _SYSMON_READY: bool = _WIN32_OK and platform.system() == "Windows"
@@ -84,7 +86,7 @@ def add_xgboost_threat_score(rows: list[dict]) -> list[dict]:
                 row['XGBoost_위협도'] = -1.0
                 row['XGBoost_라벨'] = 'Unknown'
     except Exception as e:
-        print(f"⚠️ XGBoost 위협도 추가 오류: {e}")
+        print(f"[WARN] XGBoost 위협도 추가 오류: {e}")
     
     return rows
 
@@ -606,3 +608,159 @@ with row2_col3:
             if u and st.button("링크 분석 시작", key="u_btn", width="stretch"):
                 vt = analyze_url_vt(u)
                 render_vt_results(vt) if vt else st.error("분석 중 에러가 발생했습니다.")
+
+
+# ==================================================================
+# 실시간 프로세스 모니터링
+# ==================================================================
+
+# 의심 프로세스 키워드 목록 (fileless / 악성 가능성)
+_SUSPICIOUS_KEYWORDS = [
+    "powershell", "cmd", "wscript", "cscript", "mshta", "regsvr32",
+    "rundll32", "certutil", "bitsadmin", "msiexec", "wmic",
+    "schtasks", "at.exe", "net.exe", "netsh", "mimikatz",
+    "psexec", "cobalt", "beacon", "empire", "metasploit"
+]
+
+def get_process_list() -> pd.DataFrame:
+    """현재 실행 중인 프로세스 목록을 DataFrame으로 반환"""
+    rows = []
+    for proc in psutil.process_iter(['pid', 'name', 'status', 'cpu_percent',
+                                      'memory_info', 'exe', 'username', 'create_time']):
+        try:
+            info = proc.info
+            mem_mb = round(info['memory_info'].rss / 1024 / 1024, 1) if info['memory_info'] else 0
+            exe_path = info['exe'] or ""
+            name_lower = (info['name'] or "").lower()
+            is_suspicious = any(kw in name_lower for kw in _SUSPICIOUS_KEYWORDS)
+
+            try:
+                create_dt = datetime.datetime.fromtimestamp(info['create_time']).strftime('%H:%M:%S')
+            except Exception:
+                create_dt = "-"
+
+            rows.append({
+                "PID":       info['pid'],
+                "프로세스명": info['name'] or "-",
+                "상태":      info['status'] or "-",
+                "CPU%":      info['cpu_percent'],
+                "메모리(MB)": mem_mb,
+                "사용자":    info['username'] or "-",
+                "시작 시간": create_dt,
+                "실행 경로": exe_path,
+                "의심 여부": "[의심]" if is_suspicious else "",
+            })
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("CPU%", ascending=False).reset_index(drop=True)
+    return df
+
+
+st.markdown("---")
+
+with st.container(border=True):
+    proc_title_col, proc_ctrl_col1, proc_ctrl_col2, proc_refresh_col = st.columns([4, 2, 2, 1])
+
+    with proc_title_col:
+        st.markdown("### 실시간 프로세스 모니터링")
+
+    with proc_ctrl_col1:
+        search_keyword = st.text_input(
+            "프로세스 검색",
+            placeholder="이름 또는 경로 검색...",
+            label_visibility="collapsed",
+            key="proc_search"
+        )
+
+    with proc_ctrl_col2:
+        sort_by = st.selectbox(
+            "정렬 기준",
+            ["CPU%", "메모리(MB)", "PID", "프로세스명"],
+            label_visibility="collapsed",
+            key="proc_sort"
+        )
+
+    with proc_refresh_col:
+        do_refresh = st.button("새로고침", key="proc_refresh_btn", use_container_width=True)
+
+    # 프로세스 목록 로드
+    if "proc_df" not in st.session_state or do_refresh:
+        with st.spinner("프로세스 목록 수집 중..."):
+            st.session_state.proc_df = get_process_list()
+
+    proc_df = st.session_state.proc_df.copy()
+
+    if not proc_df.empty:
+        # 검색 필터
+        if search_keyword:
+            mask = (
+                proc_df["프로세스명"].str.contains(search_keyword, case=False, na=False) |
+                proc_df["실행 경로"].str.contains(search_keyword, case=False, na=False)
+            )
+            proc_df = proc_df[mask]
+
+        # 정렬
+        ascending = sort_by == "프로세스명"
+        proc_df = proc_df.sort_values(sort_by, ascending=ascending).reset_index(drop=True)
+
+        # 요약 지표
+        total_proc    = len(st.session_state.proc_df)
+        suspicious_cnt = len(st.session_state.proc_df[st.session_state.proc_df["의심 여부"] == "[의심]"])
+        top_cpu_proc  = st.session_state.proc_df.iloc[0]["프로세스명"] if not st.session_state.proc_df.empty else "-"
+        top_cpu_val   = st.session_state.proc_df.iloc[0]["CPU%"] if not st.session_state.proc_df.empty else 0
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("전체 프로세스", total_proc)
+        m2.metric("의심 프로세스", suspicious_cnt,
+                  delta=f"+{suspicious_cnt}" if suspicious_cnt > 0 else None,
+                  delta_color="inverse")
+        m3.metric("CPU 1위", top_cpu_proc)
+        m4.metric("CPU%", f"{top_cpu_val:.1f}%")
+
+        # 의심 프로세스 경고 배너
+        if suspicious_cnt > 0:
+            suspicious_names = ", ".join(
+                st.session_state.proc_df[
+                    st.session_state.proc_df["의심 여부"] == "[의심]"
+                ]["프로세스명"].unique().tolist()[:10]
+            )
+            st.warning(f"의심 프로세스 {suspicious_cnt}건 탐지: {suspicious_names}")
+
+        # 탭으로 전체/의심만 구분
+        tab_all, tab_suspicious = st.tabs([f"전체 ({len(proc_df)})", f"의심 프로세스만 ({suspicious_cnt})"])
+
+        with tab_all:
+            st.dataframe(
+                proc_df,
+                width="stretch",
+                hide_index=True,
+                height=320,
+                column_config={
+                    "CPU%":       st.column_config.ProgressColumn("CPU%", min_value=0, max_value=100, format="%.1f%%"),
+                    "메모리(MB)": st.column_config.NumberColumn("메모리(MB)", format="%.1f MB"),
+                    "의심 여부":  st.column_config.TextColumn("의심"),
+                }
+            )
+
+        with tab_suspicious:
+            susp_df = proc_df[proc_df["의심 여부"] == "[의심]"]
+            if susp_df.empty:
+                st.success("현재 의심 프로세스가 없습니다.")
+            else:
+                st.dataframe(
+                    susp_df,
+                    width="stretch",
+                    hide_index=True,
+                    height=min(len(susp_df) * 38 + 40, 320),
+                    column_config={
+                        "CPU%":       st.column_config.ProgressColumn("CPU%", min_value=0, max_value=100, format="%.1f%%"),
+                        "메모리(MB)": st.column_config.NumberColumn("메모리(MB)", format="%.1f MB"),
+                    }
+                )
+    else:
+        st.info("프로세스 정보를 불러올 수 없습니다.")
+
+    st.caption(f"마지막 갱신: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  |  새로고침 버튼을 눌러 최신 상태를 반영하세요.")
