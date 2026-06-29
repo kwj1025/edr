@@ -42,7 +42,6 @@ HOST_IP         = socket.gethostbyname(socket.gethostname())
 
 _agent_running     = False
 _agent_thread      = None
-_dashboard_thread  = None
 _dashboard_started = False
 
 
@@ -134,17 +133,8 @@ def _stop_agent(icon, item):
     _update_menu(icon)
 
 
-def _run_streamlit(dashboard_path: str):
-    import streamlit.web.bootstrap as bootstrap
-    bootstrap.run(dashboard_path, False, [], {
-        "server.port": DASHBOARD_PORT,
-        "server.headless": True,
-        "global.developmentMode": False,
-    })
-
-
 def _open_dashboard(icon, item):
-    global _dashboard_thread, _dashboard_started
+    global _dashboard_started
 
     if not _dashboard_started:
         if getattr(sys, "frozen", False):
@@ -159,20 +149,18 @@ def _open_dashboard(icon, item):
                             os.path.join(root_dst, "collector"))
             dashboard = os.path.join(root_dst, "dashboards", "user_dashboard.py")
             python = shutil.which("python") or shutil.which("python3") or "python"
-            subprocess.Popen(
-                [python, "-m", "streamlit", "run", dashboard,
-                 "--server.port", str(DASHBOARD_PORT),
-                 "--server.headless", "true"],
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
         else:
-            # 스크립트 실행 시: 같은 프로세스 스레드로 실행
             base = os.path.dirname(os.path.abspath(__file__))
             dashboard = os.path.join(base, "dashboards", "user_dashboard.py")
-            _dashboard_thread = threading.Thread(
-                target=_run_streamlit, args=(dashboard,), daemon=True
-            )
-            _dashboard_thread.start()
+            python = sys.executable
+
+        # 별도 프로세스로 실행 (스레드에서 실행 시 signal 핸들러 오류 발생)
+        subprocess.Popen(
+            [python, "-m", "streamlit", "run", dashboard,
+             "--server.port", str(DASHBOARD_PORT),
+             "--server.headless", "true"],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
 
         _dashboard_started = True
         time.sleep(2)
