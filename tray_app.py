@@ -12,6 +12,8 @@ import time
 import socket
 import sys
 import os
+import tkinter as tk
+from tkinter import simpledialog
 
 import pystray
 from PIL import Image, ImageDraw
@@ -20,7 +22,19 @@ import requests
 from collector.sysmon_collector import collect, apply_jonghan_policy
 from response import response_by_risk
 
-SERVER_URL      = "http://localhost:8000"
+def _ask_server_ip() -> str:
+    root = tk.Tk()
+    root.withdraw()
+    ip = simpledialog.askstring(
+        "서버 연결",
+        "서버 IP 주소를 입력하세요:\n(예: 192.168.0.10)",
+    )
+    root.destroy()
+    if not ip or not ip.strip():
+        sys.exit(0)
+    return ip.strip()
+
+SERVER_URL      = f"http://{_ask_server_ip()}:8000"
 DASHBOARD_PORT  = 8500
 INTERVAL_SEC    = 10
 MAX_RECORDS     = 100
@@ -30,29 +44,7 @@ _agent_running     = False
 _agent_thread      = None
 _dashboard_thread  = None
 _dashboard_started = False
-_server_started    = False
 
-
-# ── FastAPI 서버 자동 시작 ────────────────────────────────────────────
-def _run_fastapi():
-    import uvicorn
-    from backend.server import app as fastapi_app
-    uvicorn.run(fastapi_app, host="0.0.0.0", port=8000, log_level="error")
-
-
-def _ensure_server():
-    global _server_started
-    if _server_started:
-        return
-    _server_started = True
-    threading.Thread(target=_run_fastapi, daemon=True).start()
-    # 서버 준비될 때까지 대기 (최대 10초)
-    for _ in range(20):
-        try:
-            requests.get("http://localhost:8000/docs", timeout=1)
-            break
-        except Exception:
-            time.sleep(0.5)
 
 
 # ── 아이콘 생성 (파란 방패 모양) ─────────────────────────────────────
@@ -213,10 +205,21 @@ def _update_menu(icon):
     )
 
 
+# ── Sysmon 시작 ──────────────────────────────────────────────────────
+def _start_sysmon():
+    try:
+        subprocess.run(
+            ["sc", "start", "Sysmon64"],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except Exception:
+        pass
+
+
 # ── 진입점 ────────────────────────────────────────────────────────────
 def main():
-    _ensure_server()  # 트레이 시작 즉시 FastAPI 서버 자동 실행
-
+    _start_sysmon()
     icon = pystray.Icon(
         name  = "EDR Agent",
         icon  = _make_icon(False),
@@ -226,5 +229,14 @@ def main():
     icon.run()
 
 
+def _require_admin():
+    import ctypes
+    if not ctypes.windll.shell32.IsUserAnAdmin():
+        ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, " ".join(sys.argv), None, 1
+        )
+        sys.exit(0)
+
 if __name__ == "__main__":
+    _require_admin()
     main()
