@@ -51,10 +51,36 @@ def preprocess_data(df, target_col):
 
     encoders = {}
 
-    cols_to_drop = ['record_id', 'time_created']
+    # ================================================================
+    # 누출(Leakage) 컬럼 제거
+    # - source_dataset / source_file : 데이터 출처 → 레이블과 1:1 대응
+    # - record_id / time_created     : 식별자 / 타임스탬프 → 추론 시 무의미
+    # - process_group_no / process_event_order : 데이터셋 구성 순서
+    # - process_guid / parent_process_guid : 실행마다 달라지는 UUID
+    # ================================================================
+    cols_to_drop = [
+        'record_id', 'time_created',
+        'source_dataset', 'source_file',
+        'process_group_no', 'process_event_order',
+        'process_guid', 'parent_process_guid',
+    ]
     for col in cols_to_drop:
         if col in X_raw.columns:
             X_raw = X_raw.drop(columns=[col])
+
+    # ================================================================
+    # 희귀값 마스킹 (빈도 < 5 인 값 → '__RARE__')
+    # process_name, command_line 은 특정 공격 도구 이름을 그대로 암기하는
+    # 문제가 있으므로, 학습 데이터에서 드물게 등장하는 값은 일반화 처리
+    # ================================================================
+    rare_mask_cols = ['process_name', 'command_line', 'parent_process']
+    for col in rare_mask_cols:
+        if col in X_raw.columns:
+            freq = X_raw[col].astype(str).value_counts()
+            rare_vals = set(freq[freq < 5].index)
+            X_raw[col] = X_raw[col].astype(str).apply(
+                lambda v: '__RARE__' if v in rare_vals else v
+            )
 
     for col in X_raw.columns:
         if not pd.api.types.is_numeric_dtype(X_raw[col]):
@@ -95,8 +121,8 @@ def train_xgboost_with_validation(X_train, y_train, X_val, y_val):
 
     model = xgb.XGBClassifier(
         learning_rate=0.01,
-        n_estimators=500,
-        max_depth=3,
+        n_estimators=2000,      # [확정] n=1000 vs n=2000 비교 실험 후 n=2000 채택
+        max_depth=3,             # [확정] max_depth=3 (Gap 최소, 과적합 없음)
         min_child_weight=5,
         reg_alpha=2.0,
         reg_lambda=2.0,
@@ -203,8 +229,8 @@ def cross_validate_model(X, y):
 
     model = xgb.XGBClassifier(
         learning_rate=0.01,
-        n_estimators=500,
-        max_depth=3,
+        n_estimators=2000,      # [확정] n=1000 vs n=2000 비교 실험 후 n=2000 채택
+        max_depth=3,             # [확정] max_depth=3 (Gap 최소, 과적합 없음)
         min_child_weight=5,
         reg_alpha=2.0,
         reg_lambda=2.0,
