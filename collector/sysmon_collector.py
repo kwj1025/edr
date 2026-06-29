@@ -9,6 +9,7 @@ from __future__ import annotations
 import subprocess
 import json
 import platform
+import socket
 from datetime import datetime
 
 SYSMON_CHANNEL   = "Microsoft-Windows-Sysmon/Operational"
@@ -100,6 +101,7 @@ $result | ConvertTo-Json -Depth 3
             encoding="utf-8",
             errors="replace",
             timeout=30,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
 
         if proc.returncode != 0 or not proc.stdout.strip():
@@ -135,7 +137,7 @@ $result | ConvertTo-Json -Depth 3
         rows.append({
             "로그 수신 날짜": now_str,
             "로그 생성 날짜": gen_time,
-            "호스트 IP 주소": "localhost",
+            "호스트 IP 주소": socket.gethostbyname(socket.gethostname()),
             "운영체제":       platform.platform(),
             "룰 레벨":        "중요" if risk in ("H", "High") else "일반",
             "위험도":         risk,
@@ -181,13 +183,24 @@ def evaluate_threat_level(log_data: dict) -> dict:
 
     # --- [Step 2] 가중치 부여 (위험 행위 탐지) ---
     # 1. 위험 도구 실행 가중치 (ID 1 연관)
-    danger_tools = ["powershell", "cmd.exe", "certutil", "bitsadmin", "schtasks", "reg.exe"]
-    if any(tool in process_name for tool in danger_tools):
+    # PowerShell은 악성 패턴이 있을 때만 위험으로 판정
+    POWERSHELL_MALICIOUS = [
+        "-encodedcommand", "-enc ", "-e ", "iex ", "invoke-expression",
+        "downloadstring", "downloadfile", "bypass", "-windowstyle hidden",
+        "-noprofile -", "frombase64string", "webclient", "net.webclient",
+    ]
+    danger_tools = ["cmd.exe", "certutil", "bitsadmin", "schtasks", "reg.exe"]
+
+    if "powershell" in process_name:
+        if any(pat in cmd_line for pat in POWERSHELL_MALICIOUS):
+            score += 40
+            log_data["탐지 유형"] = "PowerShell 악성 패턴 탐지"
+    elif any(tool in process_name for tool in danger_tools):
         score += 40
         log_data["탐지 유형"] = "위험 도구 실행 탐지"
 
     # 2. 비표준 포트 통신 가중치 (ID 3 연관)
-    if event_id == 3 and dest_port not in ["80", "443", ""]:
+    if event_id == 3 and dest_port not in ["80", "443", "53", ""]:
         score += 20
         log_data["탐지 유형"] = "비표준 포트 통신 탐지"
 
