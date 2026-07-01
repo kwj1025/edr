@@ -7,3 +7,8 @@ README.md
 collector/FILELESS_GUIDE.md
 docs/Code Line Code.md
 docs/WORK_LOG.md
+collector/collector_state.json
+collector/alert_logs.jsonl
+__pycache__/
+*.pyc
+.env

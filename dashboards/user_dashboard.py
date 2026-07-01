@@ -1,255 +1,368 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
-import hashlib
 import requests
-import base64
+import subprocess
+import json
 import time
 import platform
+from datetime import datetime
 
-# ==================================================================
+
+# ============================================================
 # 설정
-# ==================================================================
-API_KEY          = "여기에_본인_VirusTotal_API_KEY_입력"
-HEADERS          = {"accept": "application/json", "x-apikey": API_KEY}
-SERVER_URL       = "http://localhost:8000"
-TARGET_IDS_LABEL = "Event ID 1 · 3 · 5 · 22"
+# ============================================================
 
-# ==================================================================
-# Sysmon 수집기 임포트 + 가용 여부 체크
-# ==================================================================
-try:
-    import win32evtlog  # type: ignore[import]
-    import sys
-    import os
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-    from collector import sysmon_collector  # type: ignore[import]
-    _WIN32_OK = True
-except ImportError:
-    sysmon_collector = None  # type: ignore[assignment]
-    _WIN32_OK = False
-
-# 실행 시점에 한 번만 체크
-_SYSMON_READY: bool = _WIN32_OK and platform.system() == "Windows"
-
-# ==================================================================
-# session_state 초기화
-# ==================================================================
-if "sysmon_logs" not in st.session_state:
-    st.session_state.sysmon_logs = pd.DataFrame()
+SERVER_URL = "http://127.0.0.1:8000"
+AUTO_REFRESH_SECONDS = 5
 
 
-# ==================================================================
-# 서버 전송
-# ==================================================================
-def send_to_server(rows: list[dict]) -> tuple[int, str]:
+st.set_page_config(
+    page_title="EDR User Dashboard",
+    layout="wide",
+)
+
+
+# ============================================================
+# CSS
+# ============================================================
+
+st.markdown(
+    """
+<style>
+    .stApp {
+        background-color: #111827;
+        color: #f9fafb;
+    }
+
+    div[data-testid="stMetric"] {
+        background-color: #111827;
+        border-radius: 10px;
+    }
+
+    .main-card {
+        border: 1px solid #374151;
+        border-radius: 10px;
+        padding: 18px;
+        background-color: #111827;
+    }
+
+    .info-box {
+        background-color: #1e3a5f;
+        color: #38bdf8;
+        padding: 14px;
+        border-radius: 8px;
+        margin-bottom: 12px;
+    }
+
+    .warn-box {
+        background-color: #4c1d1d;
+        color: #f87171;
+        padding: 14px;
+        border-radius: 8px;
+        margin-bottom: 12px;
+    }
+
+    .ok-box {
+        background-color: #064e3b;
+        color: #6ee7b7;
+        padding: 14px;
+        border-radius: 8px;
+        margin-bottom: 12px;
+    }
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# 데이터 로드
+# ============================================================
+
+def load_logs_from_server(limit=1000):
+    try:
+        response = requests.get(f"{SERVER_URL}/logs?limit={limit}", timeout=5)
+        response.raise_for_status()
+
+        data = response.json()
+
+        if not data:
+            return pd.DataFrame(), ""
+
+        df = pd.DataFrame(data)
+
+        df = df.rename(
+            columns={
+                "recv_time": "로그 수신 날짜",
+                "gen_time": "로그 생성 날짜",
+                "host_ip": "호스트 IP 주소",
+                "os_name": "운영체제",
+                "rule_level": "룰 레벨",
+                "risk": "위험도",
+                "ai_score": "AI 위험도 점수",
+                "ai_risk": "AI 위험도",
+                "detect_type": "탐지 유형",
+                "tactic_id": "Tactic ID",
+                "tactic_name": "Tactic Name",
+                "technique_id": "Technique ID",
+                "technique_name": "Technique Name",
+                "action_desc": "행위 내용",
+                "process_name": "프로세스",
+                "event_id": "EventID",
+                "command_line": "CommandLine",
+                "destination_ip": "DestinationIp",
+                "destination_port": "DestinationPort",
+                "query_name": "QueryName",
+                "status": "상태",
+            }
+        )
+
+        for col in ["로그 수신 날짜", "로그 생성 날짜"]:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors="coerce")
+
+        return df, ""
+
+    except Exception as e:
+        return pd.DataFrame(), str(e)
+
+
+def send_rows_to_server(rows):
     if not rows:
         return 0, ""
 
-    formatted = [{
-        "host_ip":          r.get("호스트 IP 주소", "192.168.0.10"),
-        "gen_time":         r.get("로그 생성 날짜"),
-        "os_name":          r.get("운영체제"),
-        "rule_level":       r.get("룰 레벨"),
-        "risk":             r.get("위험도"),
-        "detect_type":      r.get("탐지 유형"),
-        "tactic_id":        r.get("Tactic ID"),
-        "tactic_name":      r.get("Tactic Name"),
-        "technique_id":     r.get("Technique ID"),
-        "technique_name":   r.get("Technique Name"),
-        "action_desc":      r.get("행위 내용"),
-        "process_name":     r.get("프로세스"),
-        "event_id":         r.get("EventID"),
-        "command_line":     r.get("CommandLine"),
-        "destination_ip":   r.get("DestinationIp"),
-        "destination_port": r.get("DestinationPort"),
-        "query_name":       r.get("QueryName"),
-        "status":           r.get("상태", "신규"),
-    } for r in rows]
-
     try:
-        res = requests.post(
-            f"{SERVER_URL}/logs",
-            json={"logs": formatted},
-            timeout=10,
-        )
-        res.raise_for_status()
-        return res.json()["저장된 건수"], ""
+        payload = {"logs": rows}
+        response = requests.post(f"{SERVER_URL}/logs", json=payload, timeout=10)
+        response.raise_for_status()
+
+        result = response.json()
+        return result.get("저장된 건수", len(rows)), ""
+
     except Exception as e:
         return 0, str(e)
 
 
-# ==================================================================
-# Sysmon 수집 → session_state → 서버 전송
-# ==================================================================
-def collect_and_send(max_records: int = 500) -> tuple[int, int, str]:
-    """Returns (collected_count, sent_count, error)"""
-    if not (_WIN32_OK and platform.system() == "Windows"):
-        return 0, 0, "Windows + pywin32 환경에서만 수집 가능합니다. (pip install pywin32)"
+# ============================================================
+# Fileless 탐지
+# ============================================================
+
+def get_local_ip():
+    try:
+        import socket
+
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def run_powershell_fileless_scan(max_records=100):
+    """
+    PowerShell Script Block Logging Event ID 4104 기반 Fileless 의심 행위 탐지.
+    4104 로그가 없으면 빈 리스트가 나올 수 있음.
+    """
+    ps_script = """
+$events = Get-WinEvent -LogName 'Microsoft-Windows-PowerShell/Operational' -MaxEvents """ + str(max_records) + """ -ErrorAction SilentlyContinue |
+    Where-Object { $_.Id -eq 4104 }
+
+$result = @()
+
+foreach ($e in $events) {
+    $msg = $e.Message
+
+    if (
+        $msg -match "EncodedCommand" -or
+        $msg -match "-enc" -or
+        $msg -match "IEX" -or
+        $msg -match "Invoke-Expression" -or
+        $msg -match "DownloadString" -or
+        $msg -match "Net.WebClient" -or
+        $msg -match "FromBase64String" -or
+        $msg -match "Invoke-WebRequest" -or
+        $msg -match "Start-Process" -or
+        $msg -match "Bypass"
+    ) {
+        $result += [PSCustomObject]@{
+            Id = $e.Id
+            RecordId = $e.RecordId
+            TimeCreated = $e.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss")
+            Message = $msg
+        }
+    }
+}
+
+$result | ConvertTo-Json -Depth 5
+"""
 
     try:
-        rows = sysmon_collector.collect(max_records=max_records)
-        if not rows:
-            return 0, 0, ""
-        
-        rows = sysmon_collector.apply_jonghan_policy(rows)   
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
 
-        st.session_state.sysmon_logs = pd.DataFrame(rows)
-        sent, err = send_to_server(rows)
-        return len(rows), sent, err
+        if result.returncode != 0:
+            return [], result.stderr
+
+        output = result.stdout.strip()
+
+        if output == "":
+            return [], ""
+
+        data = json.loads(output)
+
+        if isinstance(data, dict):
+            data = [data]
+
+        if not isinstance(data, list):
+            return [], ""
+
+        return data, ""
 
     except Exception as e:
-        return 0, 0, str(e)
+        return [], str(e)
 
 
-# ==================================================================
-# VirusTotal
-# ==================================================================
-def _fmt(stats, results):
-    return {"stats": stats, "results": results}
+def collect_fileless_threats():
+    if platform.system() != "Windows":
+        return 0, 0, "Windows 환경에서만 Fileless 탐지가 가능합니다."
 
-def analyze_file_vt(uploaded_file):
-    data = uploaded_file.getvalue()
-    h    = hashlib.sha256(data).hexdigest()
-    res  = requests.get(f"https://www.virustotal.com/api/v3/files/{h}", headers=HEADERS)
-    if res.status_code == 200:
-        d = res.json()["data"]["attributes"]
-        return _fmt(d["last_analysis_stats"], d["last_analysis_results"])
-    if res.status_code == 404:
-        up = requests.post("https://www.virustotal.com/api/v3/files",
-                           headers=HEADERS, files={"file": (uploaded_file.name, data)})
-        if up.status_code == 200:
-            return _wait_vt(up.json()["data"]["id"])
-    return None
+    events, err = run_powershell_fileless_scan(max_records=100)
 
-def analyze_url_vt(target_url):
-    uid = base64.urlsafe_b64encode(target_url.encode()).decode().strip("=")
-    res = requests.get(f"https://www.virustotal.com/api/v3/urls/{uid}", headers=HEADERS)
-    if res.status_code == 200:
-        d = res.json()["data"]["attributes"]
-        return _fmt(d["last_analysis_stats"], d["last_analysis_results"])
-    if res.status_code == 404:
-        pr = requests.post("https://www.virustotal.com/api/v3/urls",
-                           headers=HEADERS, data={"url": target_url})
-        if pr.status_code == 200:
-            return _wait_vt(pr.json()["data"]["id"])
-    return None
+    if err:
+        return 0, 0, err
 
-def _wait_vt(analysis_id):
-    url = f"https://www.virustotal.com/api/v3/analyses/{analysis_id}"
-    with st.status("검사를 진행 중입니다...", expanded=True) as s:
-        for _ in range(12):
-            res = requests.get(url, headers=HEADERS)
-            if res.status_code == 200:
-                d = res.json()["data"]["attributes"]
-                if d["status"] == "completed":
-                    s.update(label="검사 완료", state="complete", expanded=False)
-                    return _fmt(d["stats"], d["results"])
-            time.sleep(10)
-    return None
+    if not events:
+        return 0, 0, ""
 
-def render_vt_results(vt_data):
-    stats = vt_data["stats"]
-    m     = stats["malicious"]
-    total = m + stats["harmless"] + stats.get("undetected", 0)
-    if m > 0:
-        st.error(f"[위험] {total}개 중 {m}개 악성 탐지")
-    else:
-        st.success("[안전] 악성 내역 없음")
-    rows = []
-    for engine, detail in vt_data["results"].items():
-        cat = detail.get("category", "undetected")
-        label, order = {"malicious": ("악성", 1), "suspicious": ("의심", 2),
-                        "harmless": ("정상", 3)}.get(cat, ("미탐지", 4))
-        rows.append({"엔진": engine, "결과": label,
-                     "진단명": detail.get("result", ""), "_s": order})
-    df = pd.DataFrame(rows).sort_values("_s").drop(columns=["_s"])
-    st.dataframe(df, width="stretch", hide_index=True, height=200)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    host_ip = get_local_ip()
+    os_name = platform.platform()
+
+    rows_for_server = []
+
+    for event in events:
+        msg = str(event.get("Message", ""))
+        gen_time = event.get("TimeCreated", now_str)
+
+        short_msg = msg.replace("\n", " ")[:200]
+
+        row = {
+            "recv_time": now_str,
+            "gen_time": gen_time,
+            "host_ip": host_ip,
+            "os_name": os_name,
+            "rule_level": "중요",
+            "risk": "High",
+            "ai_risk": "High",
+            "ai_score": 90.0,
+            "detect_type": "Fileless 공격 탐지",
+            "tactic_id": "TA0002",
+            "tactic_name": "Execution",
+            "technique_id": "T1059.001",
+            "technique_name": "PowerShell",
+            "action_desc": "[ALERT] Fileless 의심 PowerShell 스크립트 탐지 | " + short_msg,
+            "process_name": "powershell.exe",
+            "event_id": 4104,
+            "command_line": short_msg,
+            "destination_ip": "",
+            "destination_port": "",
+            "query_name": "",
+            "status": "알림",
+        }
+
+        rows_for_server.append(row)
+
+    sent, send_err = send_rows_to_server(rows_for_server)
+
+    if send_err:
+        return len(rows_for_server), sent, send_err
+
+    return len(rows_for_server), sent, ""
 
 
-# ==================================================================
+# ============================================================
 # 통계 계산
-# ==================================================================
-def _calc_stats() -> dict:
-    df = st.session_state.sysmon_logs
+# ============================================================
+
+def calc_stats(df):
     if df.empty:
-        return {"total": 0, "new": 0, "checking": 0, "hold": 0, "done": 0,
-                "high": 0, "medium": 0, "low": 0,
-                "malicious": 0, "suspicious": 0, "normal": 0}
-    total      = len(df)
-    risk_col   = "위험도"    if "위험도"    in df.columns else None
-    status_col = "상태"      if "상태"      in df.columns else None
-    type_col   = "탐지 유형" if "탐지 유형" in df.columns else None
+        return {
+            "total": 0,
+            "new": 0,
+            "checking": 0,
+            "hold": 0,
+            "done": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "alert": 0,
+        }
+
+    status_col = "상태" if "상태" in df.columns else None
+    risk_col = "위험도" if "위험도" in df.columns else None
+
     return {
-        "total":      total,
-        "new":        len(df[df[status_col] == "신규"])      if status_col else total,
-        "checking":   len(df[df[status_col] == "확인 중"])   if status_col else 0,
-        "hold":       len(df[df[status_col] == "보류"])      if status_col else 0,
-        "done":       len(df[df[status_col] == "확인 완료"]) if status_col else 0,
-        "high":       len(df[df[risk_col]   == "H"])         if risk_col else 0,
-        "medium":     len(df[df[risk_col]   == "M"])         if risk_col else 0,
-        "low":        len(df[df[risk_col]   == "L"])         if risk_col else 0,
-        "malicious":  len(df[df[type_col]   == "악성"])      if type_col else 0,
-        "suspicious": len(df[df[type_col]   == "의심"])      if type_col else 0,
-        "normal":     len(df[df[type_col]   == "정상"])      if type_col else 0,
+        "total": len(df),
+        "new": len(df[df[status_col] == "신규"]) if status_col else 0,
+        "checking": len(df[df[status_col] == "의심"]) if status_col else 0,
+        "hold": len(df[df[status_col] == "보류"]) if status_col else 0,
+        "done": len(df[df[status_col] == "확인 완료"]) if status_col else 0,
+        "high": len(df[df[risk_col] == "High"]) if risk_col else 0,
+        "medium": len(df[df[risk_col] == "Medium"]) if risk_col else 0,
+        "low": len(df[df[risk_col] == "Low"]) if risk_col else 0,
+        "alert": len(df[df[status_col] == "알림"]) if status_col else 0,
     }
 
 
-# ==================================================================
-# 페이지 설정 & CSS
-# ==================================================================
-st.set_page_config(page_title="EDR User Dashboard", layout="wide")
+def filter_by_range(df, range_label):
+    if df.empty or "로그 수신 날짜" not in df.columns:
+        return df
 
-st.markdown("""
-<style>
-@font-face {
-    font-family: 'NanumSquareRound';
-    src: url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_two@1.0/NanumSquareRound.woff') format('woff');
-}
-h1,h2,h3,h4,p,label,.stMarkdown,.stText {
-    font-family: 'NanumSquareRound', sans-serif !important;
-}
-div[data-testid="stMetricValue"] {
-    font-family: 'NanumSquareRound', sans-serif !important;
-    font-size: 1.6rem !important;
-}
-div[data-testid="stMetricLabel"] {
-    font-family: 'NanumSquareRound', sans-serif !important;
-    font-size: 0.8rem !important;
-}
-h2 { font-size: 1.4rem !important; margin-bottom: 0px !important; }
-h3 { font-size: 1.1rem !important; }
-h4 { font-size: 0.9rem !important; }
-button[kind="tertiary"] p {
-    font-size: 1.8rem !important; color: #3b82f6 !important;
-    font-weight: 800 !important; margin-top: -5px !important;
-}
-button[kind="tertiary"]:hover p { color: #60a5fa !important; }
-[data-testid="stToolbar"], #MainMenu, footer, header { visibility: hidden !important; }
-.stApp { background: linear-gradient(135deg, #1e2233 0%, #0d1017 100%) !important; }
-.main { background-color: transparent !important; color: #d1d5db; }
-div[data-testid="stVerticalBlockBorderWrapper"] {
-    background-color: rgba(30, 34, 51, 0.4) !important;
-    backdrop-filter: blur(8px);
-    border-radius: 10px !important;
-    border: 1px solid rgba(255,255,255,0.05) !important;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.3) !important;
-}
-h1,h2,h3,h4 { color: #f3f4f6 !important; }
-</style>
-""", unsafe_allow_html=True)
+    now = pd.Timestamp.now()
+
+    if range_label == "최근 24시간":
+        start = now - pd.Timedelta(days=1)
+    elif range_label == "최근 7일":
+        start = now - pd.Timedelta(days=7)
+    elif range_label == "최근 14일":
+        start = now - pd.Timedelta(days=14)
+    else:
+        start = now - pd.Timedelta(days=30)
+
+    return df[df["로그 수신 날짜"] >= start]
 
 
-# ==================================================================
+# ============================================================
+# 세션 상태
+# ============================================================
+
+if "auto_refresh" not in st.session_state:
+    st.session_state.auto_refresh = True
+
+if "last_refresh_time" not in st.session_state:
+    st.session_state.last_refresh_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# ============================================================
 # 상단 헤더
-# ==================================================================
+# ============================================================
+
 top_col1, top_col2, top_col3 = st.columns([3, 4, 3])
 
 with top_col1:
     st.markdown("## EDR Analyzer (사용자)")
 
 with top_col2:
-    st.segmented_control(
+    range_label = st.segmented_control(
         "조회 범위",
         ["최근 24시간", "최근 7일", "최근 14일", "최근 30일"],
         default="최근 24시간",
@@ -257,164 +370,282 @@ with top_col2:
     )
 
 with top_col3:
-    time_col, refresh_col = st.columns([5, 1])
-    with time_col:
-        st.html("""
-        <div style="text-align:right;font-family:'NanumSquareRound',sans-serif;
-                    color:#f3f4f6;padding-top:5px;">
-          <span id="clock" style="font-size:0.95rem;font-weight:bold;
-                text-shadow:0 1px 2px rgba(0,0,0,0.5);"></span>
-        </div>
-        <script>
-        function updateClock(){
-            const n=new Date();
-            document.getElementById('clock').innerText=
-                n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+
-                String(n.getDate()).padStart(2,'0')+' '+
-                String(n.getHours()).padStart(2,'0')+':'+
-                String(n.getMinutes()).padStart(2,'0')+':'+
-                String(n.getSeconds()).padStart(2,'0');
-        }
-        setInterval(updateClock,1000); updateClock();
-        </script>""")
-    with refresh_col:
+    refresh_col1, refresh_col2 = st.columns([4, 1])
+
+    with refresh_col1:
+        st.caption("마지막 새로고침")
+        st.write(st.session_state.last_refresh_time)
+
+    with refresh_col2:
         if st.button("↻", type="tertiary", help="데이터 새로고침"):
+            st.session_state.last_refresh_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             st.rerun()
+
 
 st.markdown("---")
 
-stats = _calc_stats()
 
-# ==================================================================
+# ============================================================
+# 로그 불러오기
+# ============================================================
+
+raw_df, load_err = load_logs_from_server(limit=2000)
+
+if not raw_df.empty:
+    log_df = filter_by_range(raw_df, range_label)
+else:
+    log_df = raw_df
+
+stats = calc_stats(log_df)
+
+
+# ============================================================
 # 중앙 레이아웃
-# ==================================================================
+# ============================================================
+
 row1_col1, row1_col2 = st.columns([3, 7])
 
 with row1_col1:
     with st.container(border=True):
         st.markdown("### 위험 현황")
-        color = "#ef4444" if stats["total"] > 0 else "#10b981"
+
+        color = "#ef4444" if stats["alert"] > 0 else "#10b981"
+
         st.markdown(
-            f"<h1 style='color:{color};font-size:2.5rem;margin-top:-10px;'>"
-            f"{stats['total']}</h1>",
+            f"""
+            <div style="font-size: 42px; font-weight: 800; color: {color};">
+                {stats["alert"]}
+            </div>
+            """,
             unsafe_allow_html=True,
         )
+
         c1, c2 = st.columns(2)
-        c1.metric("신규",      stats["new"])
-        c2.metric("확인 중",   stats["checking"])
-        c1.metric("보류",      stats["hold"])
-        c2.metric("확인 완료", stats["done"])
+
+        c1.metric("신규", stats["new"])
+        c2.metric("의심", stats["checking"])
+        c1.metric("High", stats["high"])
+        c2.metric("Medium", stats["medium"])
+
+        st.caption("실시간 수집기는 별도 터미널에서 자동 실행됩니다.")
 
 with row1_col2:
     with st.container(border=True):
         st.markdown("### 최근 탐지 위협")
 
-        if not st.session_state.sysmon_logs.empty:
-            display_cols = [c for c in
-                ["로그 수신 날짜", "위험도", "탐지 유형", "Tactic ID", "Technique Name", "프로세스", "행위 내용", "상태"]
-                if c in st.session_state.sysmon_logs.columns]
-            display_df = st.session_state.sysmon_logs[display_cols].head(10)
-            st.dataframe(display_df, width="stretch", hide_index=True,
-                         height=len(display_df) * 35 + 38)
+        if load_err:
+            st.error(f"FastAPI 서버 연결 실패: {load_err}")
+
+        elif not log_df.empty:
+            display_cols = [
+                "로그 수신 날짜",
+                "위험도",
+                "AI 위험도 점수",
+                "AI 위험도",
+                "탐지 유형",
+                "EventID",
+                "Tactic ID",
+                "Technique Name",
+                "프로세스",
+                "행위 내용",
+                "상태",
+            ]
+
+            display_cols = [c for c in display_cols if c in log_df.columns]
+
+            display_df = log_df[display_cols].copy()
+
+            if "로그 수신 날짜" in display_df.columns:
+                display_df = display_df.sort_values("로그 수신 날짜", ascending=False)
+
+            display_df = display_df.head(10)
+
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+                height=len(display_df) * 35 + 38,
+            )
+
         else:
-            st.info("수집된 로그가 없습니다. Sysmon 로그를 수집하세요.")
+            st.info("수집된 로그가 없습니다. 실시간 수집기를 실행하면 자동으로 표시됩니다.")
+
+        st.markdown(
+            """
+            <div class="ok-box">
+                ✅ Sysmon 로그는 실시간 수집기가 자동으로 FastAPI 서버에 전송합니다.
+                버튼을 누르지 않아도 새 로그가 DB에 저장되면 이 화면에 표시됩니다.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         if st.button(
-            f"🔍 Sysmon 로그 수집 ({TARGET_IDS_LABEL})",
-            width="stretch",
-            help="Event ID 1·3·5·22 수집 → 대시보드 표시 + 서버 전송",
+            "🛡️ Fileless 공격 탐지 (PowerShell)",
+            use_container_width=True,
+            help="PowerShell Script Block Logging Event ID 4104 기반 Fileless 의심 행위 탐지",
         ):
-            with st.spinner("Sysmon 이벤트 수집 중…"):
-                collected, sent, err = collect_and_send(max_records=500)
+            with st.spinner("Fileless 위협 탐지 중..."):
+                collected, sent, err = collect_fileless_threats()
+
             if collected == 0:
                 if err:
                     st.error(f"오류: {err}")
                 else:
-                    st.warning("수집된 이벤트가 없습니다. Sysmon이 실행 중인지 확인하세요.")
+                    st.info("의심 Fileless 활동이 감지되지 않았습니다.")
             else:
                 if err:
-                    st.warning(f"⚠️ {collected}건 수집됨, 서버 전송 실패: {err}")
+                    st.warning(f"{collected}건 탐지됨, 서버 전송 실패: {err}")
                 else:
-                    st.success(f"✅ {sent}건 수집 완료 → 서버 전송됨")
-                st.rerun()
-
-        if not _SYSMON_READY:
-            st.caption("⚠️ Windows + pywin32 필요  `pip install pywin32`")
+                    st.success(f"{sent}건 Fileless 위협 탐지 → 서버 전송 완료")
+                    st.rerun()
 
 
-# ==================================================================
-# 하단 레이아웃 - 차트 배경 투명화 및 테두리 제거 (강력 조치)
-# ==================================================================
+# ============================================================
+# 하단 차트
+# ============================================================
+
+st.markdown("---")
+
 row2_col1, row2_col2, row2_col3 = st.columns([3, 3, 4])
 
 with row2_col1:
     with st.container(border=True):
         st.markdown("### 위험도별 현황")
-        if not st.session_state.sysmon_logs.empty:
-            risk_df = st.session_state.sysmon_logs['위험도'].value_counts().reset_index()
-            risk_df.columns = ['위험도', '건수']
-            
-            chart = alt.Chart(risk_df).mark_arc(innerRadius=50).encode(
-                theta="건수:Q",
-                color=alt.Color("위험도:N", scale=alt.Scale(
-                    domain=["High", "Medium", "Low"],
-                    range=["#ef4444", "#f59e0b", "#3b82f6"]
-                )),
-                tooltip=["위험도", "건수"]
-            ).properties(
-                height=180,
-                background='rgba(0,0,0,0)' # 👈 배경을 완전 투명(Alpha 0)으로 설정
-            ).configure_view(
-                strokeOpacity=0,           # 👈 차트 외곽선 제거
-                fill='transparent'         # 👈 내부 채우기 투명
-            ).configure_axis(
-                grid=False                 # 👈 그리드 제거
-            )
-            # theme=None을 추가하여 스트림릿의 기본 테마 간섭을 차단합니다.
-            st.altair_chart(chart, use_container_width=True, theme=None)
+
+        if log_df.empty or "위험도" not in log_df.columns:
+            st.info("표시할 데이터가 없습니다.")
         else:
-            st.write("데이터가 없습니다.")
+            risk_df = log_df["위험도"].value_counts().reset_index()
+            risk_df.columns = ["위험도", "건수"]
+
+            chart = (
+                alt.Chart(risk_df)
+                .mark_arc(innerRadius=50)
+                .encode(
+                    theta="건수:Q",
+                    color=alt.Color(
+                        "위험도:N",
+                        scale=alt.Scale(
+                            domain=["High", "Medium", "Low"],
+                            range=["#ef4444", "#f59e0b", "#3b82f6"],
+                        ),
+                    ),
+                    tooltip=["위험도", "건수"],
+                )
+                .properties(height=220, background="rgba(0,0,0,0)")
+            )
+
+            st.altair_chart(chart, use_container_width=True)
 
 with row2_col2:
     with st.container(border=True):
-        st.markdown("### 탐지 유형별 현황")
-        if not st.session_state.sysmon_logs.empty:
-            type_df = st.session_state.sysmon_logs['탐지 유형'].value_counts().reset_index()
-            type_df.columns = ['유형', '건수']
-            
-            chart = alt.Chart(type_df).mark_bar().encode(
-                x=alt.X("건수:Q", title="건수"),
-                y=alt.Y("유형:N", sort='-x', title=None),
-                color=alt.Color("유형:N", legend=None),
-                tooltip=["유형", "건수"]
-            ).properties(
-                height=180,
-                background='rgba(0,0,0,0)' # 👈 배경을 완전 투명으로 설정
-            ).configure_view(
-                strokeOpacity=0,
-                fill='transparent'
-            ).configure_axis(
-                labelColor='white',        # 👈 글자가 안 보일 수 있으니 흰색으로 설정
-                titleColor='white'
-            )
-            st.altair_chart(chart, use_container_width=True, theme=None)
+        st.markdown("### AI 위험도 현황")
+
+        if log_df.empty or "AI 위험도" not in log_df.columns:
+            st.info("표시할 데이터가 없습니다.")
         else:
-            st.write("데이터가 없습니다.")
+            ai_df = log_df["AI 위험도"].fillna("Unknown").value_counts().reset_index()
+            ai_df.columns = ["AI 위험도", "건수"]
+
+            chart = (
+                alt.Chart(ai_df)
+                .mark_bar()
+                .encode(
+                    x=alt.X("AI 위험도:N", title="AI 위험도"),
+                    y=alt.Y("건수:Q", title="건수"),
+                    tooltip=["AI 위험도", "건수"],
+                )
+                .properties(height=220, background="rgba(0,0,0,0)")
+            )
+
+            st.altair_chart(chart, use_container_width=True)
 
 with row2_col3:
     with st.container(border=True):
-        st.markdown("### 실시간 정밀 검사 (VirusTotal)")
-        t1, t2 = st.tabs(["파일 업로드 검사", "URL 링크 검사"])
+        st.markdown("### 이벤트 유형별 현황")
 
-        with t1:
-            f = st.file_uploader("검사할 파일 선택", label_visibility="collapsed")
-            if f and st.button("정밀 분석 시작", key="f_btn", width="stretch"):
-                vt = analyze_file_vt(f)
-                render_vt_results(vt) if vt else st.error("분석 중 에러가 발생했습니다.")
+        if log_df.empty or "탐지 유형" not in log_df.columns:
+            st.info("표시할 데이터가 없습니다.")
+        else:
+            type_df = log_df["탐지 유형"].fillna("기타").value_counts().reset_index()
+            type_df.columns = ["탐지 유형", "건수"]
 
-        with t2:
-            u = st.text_input("검사할 URL 입력", placeholder="https://example.com",
-                              label_visibility="collapsed")
-            if u and st.button("링크 분석 시작", key="u_btn", width="stretch"):
-                vt = analyze_url_vt(u)
-                render_vt_results(vt) if vt else st.error("분석 중 에러가 발생했습니다.")
+            chart = (
+                alt.Chart(type_df)
+                .mark_bar()
+                .encode(
+                    x=alt.X("건수:Q", title="건수"),
+                    y=alt.Y("탐지 유형:N", title="탐지 유형", sort="-x"),
+                    tooltip=["탐지 유형", "건수"],
+                )
+                .properties(height=220, background="rgba(0,0,0,0)")
+            )
+
+            st.altair_chart(chart, use_container_width=True)
+
+
+# ============================================================
+# 상세 로그 테이블
+# ============================================================
+
+st.markdown("---")
+
+with st.container(border=True):
+    st.markdown("### 전체 로그 상세")
+
+    if log_df.empty:
+        st.info("표시할 로그가 없습니다.")
+    else:
+        detail_cols = [
+            "로그 수신 날짜",
+            "로그 생성 날짜",
+            "호스트 IP 주소",
+            "운영체제",
+            "룰 레벨",
+            "위험도",
+            "AI 위험도 점수",
+            "AI 위험도",
+            "탐지 유형",
+            "EventID",
+            "프로세스",
+            "DestinationIp",
+            "DestinationPort",
+            "QueryName",
+            "행위 내용",
+            "상태",
+        ]
+
+        detail_cols = [c for c in detail_cols if c in log_df.columns]
+
+        detail_df = log_df[detail_cols].copy()
+
+        if "로그 수신 날짜" in detail_df.columns:
+            detail_df = detail_df.sort_values("로그 수신 날짜", ascending=False)
+
+        st.dataframe(
+            detail_df,
+            use_container_width=True,
+            hide_index=True,
+            height=350,
+        )
+
+
+# ============================================================
+# 자동 새로고침
+# ============================================================
+
+st.sidebar.title("사용자 대시보드 설정")
+st.sidebar.write("FastAPI 서버:", SERVER_URL)
+
+st.session_state.auto_refresh = st.sidebar.toggle(
+    "자동 새로고침",
+    value=st.session_state.auto_refresh,
+)
+
+st.sidebar.caption(f"{AUTO_REFRESH_SECONDS}초마다 자동 새로고침")
+
+if st.session_state.auto_refresh:
+    time.sleep(AUTO_REFRESH_SECONDS)
+    st.session_state.last_refresh_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.rerun()
