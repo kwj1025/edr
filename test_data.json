@@ -1,0 +1,12 @@
+[
+    {
+        "risk_level": "Medium",
+        "process_path": "C:\\Program Files\\Kakao\\KakaoTalk\\KakaoTalk.exe",
+        "destination_ip": "8.8.8.8"
+    },
+    {
+        "risk_level": "Medium",
+        "process_path": "C:\\Users\\Withus\\AppData\\Local\\Discord\\app-1.0.9237\\Discord.exe",
+        "destination_ip": "2.2.2.2"
+    }
+]
