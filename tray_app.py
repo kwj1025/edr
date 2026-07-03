@@ -19,8 +19,17 @@ import pystray
 from PIL import Image, ImageDraw
 import requests
 
-from collector.sysmon_collector import collect, apply_jonghan_policy
+from collector.sysmon_collector import collect_all_logs, apply_alert_policy
 from response import response_by_risk
+
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "xgboost"))
+    from threat_predictor import ThreatPredictor
+    _predictor = ThreatPredictor()
+    _PREDICTOR_READY = _predictor.is_ready()
+except Exception:
+    _predictor = None
+    _PREDICTOR_READY = False
 
 def _ask_server_ip() -> str:
     root = tk.Tk()
@@ -65,47 +74,64 @@ def _make_icon(active: bool) -> Image.Image:
 # ── 에이전트 루프 ─────────────────────────────────────────────────────
 def _to_payload(log: dict) -> dict:
     return {
-        "recv_time":        log.get("로그 수신 날짜"),
-        "gen_time":         log.get("로그 생성 날짜"),
+        "recv_time":        log.get("recv_time"),
+        "gen_time":         log.get("gen_time"),
         "host_ip":          HOST_IP,
-        "os_name":          log.get("운영체제"),
-        "rule_level":       log.get("룰 레벨"),
-        "risk":             log.get("위험도"),
-        "detect_type":      log.get("탐지 유형"),
-        "tactic_id":        log.get("Tactic ID"),
-        "tactic_name":      log.get("Tactic Name"),
-        "technique_id":     log.get("Technique ID"),
-        "technique_name":   log.get("Technique Name"),
-        "action_desc":      log.get("행위 내용"),
-        "process_name":     log.get("프로세스"),
-        "event_id":         log.get("EventID"),
-        "command_line":     log.get("CommandLine"),
-        "destination_ip":   log.get("DestinationIp"),
-        "destination_port": log.get("DestinationPort"),
-        "query_name":       log.get("QueryName"),
-        "status":           log.get("상태", "신규"),
+        "os_name":          log.get("os_name"),
+        "rule_level":       log.get("rule_level"),
+        "risk":             log.get("risk"),
+        "detect_type":      log.get("detect_type"),
+        "tactic_id":        log.get("tactic_id"),
+        "tactic_name":      log.get("tactic_name"),
+        "technique_id":     log.get("technique_id"),
+        "technique_name":   log.get("technique_name"),
+        "action_desc":      log.get("action_desc"),
+        "process_name":     log.get("process_name"),
+        "event_id":         log.get("event_id"),
+        "command_line":     log.get("command_line"),
+        "destination_ip":   log.get("destination_ip"),
+        "destination_port": log.get("destination_port"),
+        "query_name":       log.get("query_name"),
+        "status":           log.get("status", "신규"),
+        "ai_risk":          log.get("ai_risk"),
+        "ai_score":         log.get("ai_score"),
     }
+
+
+def _apply_xgboost(logs: list[dict]) -> list[dict]:
+    if not _PREDICTOR_READY or not _predictor:
+        return logs
+    for log in logs:
+        try:
+            result = _predictor.predict(log)
+            if result.get("success"):
+                log["ai_risk"]  = result.get("risk_label", "Unknown")
+                log["ai_score"] = round(result.get("probability", 0.0), 4)
+        except Exception:
+            pass
+    return logs
 
 
 def _agent_loop():
     global _agent_running
     while _agent_running:
         try:
-            logs = collect(max_records=MAX_RECORDS)
+            logs = collect_all_logs()
             if logs:
-                logs = apply_jonghan_policy(logs)
+                logs = _apply_xgboost(logs)
+                logs = apply_alert_policy(logs)
                 requests.post(
                     f"{SERVER_URL}/logs",
                     json={"logs": [_to_payload(l) for l in logs]},
                     timeout=10,
                 )
                 for log in logs:
-                    risk = log.get("위험도", "Low")
+                    risk = log.get("risk", "Low")
                     if risk != "Low":
                         response_by_risk(
                             risk_level     = risk,
-                            process_path   = (log.get("CommandLine") or "").split()[0] or None,
-                            destination_ip = log.get("DestinationIp") or None,
+                            process_path   = (log.get("command_line") or "").split()[0] or None,
+                            destination_ip = log.get("destination_ip") or None,
                         )
         except Exception:
             pass
@@ -155,11 +181,11 @@ def _open_dashboard(icon, item):
             python = sys.executable
 
         # 별도 프로세스로 실행 (스레드에서 실행 시 signal 핸들러 오류 발생)
-        subprocess.Popen(
-            [python, "-m", "streamlit", "run", dashboard,
-             "--server.port", str(DASHBOARD_PORT),
-             "--server.headless", "true"],
-            creationflags=subprocess.CREATE_NO_WINDOW,
+        import ctypes
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        args = f'-m streamlit run "{dashboard}" --server.port {DASHBOARD_PORT} --server.headless true -- --server-url {SERVER_URL}'
+        ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", python, args, base_dir, 1
         )
 
         _dashboard_started = True

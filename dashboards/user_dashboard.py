@@ -3,6 +3,7 @@ import hashlib
 import json
 import platform
 import subprocess
+import sys
 import time
 from datetime import datetime
 
@@ -19,7 +20,13 @@ import streamlit as st
 API_KEY = "여기에_본인_VirusTotal_API_KEY_입력"
 HEADERS = {"accept": "application/json", "x-apikey": API_KEY}
 
-SERVER_URL = "http://localhost:8000"
+def _get_server_url():
+    for i, arg in enumerate(sys.argv):
+        if arg == "--server-url" and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+    return "http://localhost:8000"
+
+SERVER_URL = _get_server_url()
 TARGET_IDS_LABEL = "Event ID 1 · 3 · 5 · 22"
 
 AUTO_REFRESH_SECONDS = 7

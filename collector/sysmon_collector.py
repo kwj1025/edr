@@ -28,10 +28,22 @@ ALERT_LOG_FILE = Path(__file__).resolve().parent / "alert_logs.jsonl"
 XGBOOST_DIR = BASE_DIR / "xgboost"
 sys.path.insert(0, str(XGBOOST_DIR))
 
+# collector/ 폴더를 sys.path에 추가해 fileless_detector 임포트 허용
+_COLLECTOR_DIR = str(Path(__file__).resolve().parent)
+if _COLLECTOR_DIR not in sys.path:
+    sys.path.insert(0, _COLLECTOR_DIR)
+
 
 # ============================================================
 # XGBoost 모델 로드
 # ============================================================
+
+try:
+    from fileless_detector import detect_fileless_threats as _detect_fileless
+    FILELESS_READY = True
+except ImportError:
+    FILELESS_READY = False
+    _detect_fileless = None
 
 try:
     from threat_predictor import ThreatPredictor
@@ -689,6 +701,69 @@ def send_logs_to_fastapi(logs):
     except Exception as e:
         print("[FastAPI 연결 실패]", e)
         return False
+
+
+# ============================================================
+# Fileless 로그 수집 및 통합
+# ============================================================
+
+def collect_fileless_logs() -> list:
+    if not FILELESS_READY or _detect_fileless is None:
+        return []
+    try:
+        threats = _detect_fileless(hours=1)
+    except Exception:
+        return []
+
+    logs = []
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    host_ip = get_local_ip()
+    os_name = platform.platform()
+    risk_map = {"H": "High", "M": "Medium", "L": "Low"}
+
+    for t in threats:
+        risk = risk_map.get(t.get("risk_level", "M"), "Medium")
+        log = {
+            "recv_time": now_str,
+            "gen_time": str(t.get("timestamp", now_str)),
+            "host_ip": host_ip,
+            "os_name": os_name,
+            "rule_level": "중요" if risk == "High" else "주의",
+            "risk": risk,
+            "detect_type": "Fileless 공격",
+            "tactic_id": "TA0005",
+            "tactic_name": "Defense Evasion",
+            "technique_id": "T1059.001",
+            "technique_name": "PowerShell",
+            "action_desc": t.get("description", "Fileless PowerShell 탐지"),
+            "process_name": "powershell.exe",
+            "event_id": t.get("event_id", 4104),
+            "command_line": t.get("command_snippet", ""),
+            "destination_ip": "",
+            "destination_port": "",
+            "query_name": "",
+            "status": "알림" if risk == "High" else "의심",
+            "_record_id": 0,
+            "process_id": "",
+            "parent_process_id": "",
+            "image": "",
+            "user": "",
+            "parent_image": "",
+            "source_ip": "",
+            "source_port": "",
+            "ai_score": None,
+            "ai_risk": "Unknown",
+        }
+        logs.append(log)
+
+    return logs
+
+
+def collect_all_logs() -> list:
+    """Sysmon 일반 로그 + Fileless 탐지 로그 통합 수집"""
+    logs = collect_recent_logs()
+    logs += collect_fileless_logs()
+    return logs
 
 
 # ============================================================

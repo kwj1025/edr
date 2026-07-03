@@ -252,12 +252,23 @@ def cross_validate_model(X, y):
 
 def main():
     base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    normal_data_path = os.path.join(base_path, 'Dataset', 'train', 'train_normal.json')
-    malicious_data_path = os.path.join(base_path, 'Dataset', 'train', 'train_malicious.json')
     target_column = 'label'
     model_save_path = 'xgboost_sysmon_model.json'
 
-    df = load_and_combine_data(normal_data_path, malicious_data_path)
+    # Dataset1 로드
+    df = load_and_combine_data(
+        os.path.join(base_path, 'Dataset', 'train', 'train_normal.json'),
+        os.path.join(base_path, 'Dataset', 'train', 'train_malicious.json'),
+    )
+
+    # Dataset2 (실제 수집 로그) 추가
+    normal2   = os.path.join(base_path, 'Dataset2', 'collected_normal.json')
+    malicious2 = os.path.join(base_path, 'Dataset2', 'collected_malicious.json')
+    if os.path.exists(normal2) or os.path.exists(malicious2):
+        print("Dataset2 추가 로드 중...")
+        df2 = load_and_combine_data(normal2, malicious2)
+        df  = pd.concat([df, df2], ignore_index=True)
+        print(f"[완료] 통합 데이터 크기: {df.shape}\n")
     if df.empty:
         return
 
